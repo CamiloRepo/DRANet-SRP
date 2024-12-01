@@ -53,7 +53,7 @@ def set_converts(datasets, task):
         test_converts.append('G2C')
         tensorboard_converts = training_converts
     else:
-        raise Exeception("Does not support the task")
+        raise Exception("Does not support the task")
 
     return training_converts, test_converts, tensorboard_converts
 
@@ -247,11 +247,12 @@ class Trainer:
         batch_data = dict()
         for dset in self.args.datasets:
             try:
-                batch_data[dset] = batch_data_iter[dset].next()
+                batch_data[dset] = next(batch_data_iter[dset])
             except StopIteration:
                 batch_data_iter[dset] = iter(self.train_loader[dset])
-                batch_data[dset] = batch_data_iter[dset].next()
+                batch_data[dset] = next(batch_data_iter[dset])
         return batch_data
+
 
     def train_dis(self, imgs):  # Train Discriminators (D)
         self.set_zero_grad()

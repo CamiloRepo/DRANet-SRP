@@ -2,13 +2,17 @@
     - get_mean_and_std: calculate the mean and std value of dataset.
     - msr_init: net parameter initialization.
     - progress_bar: progress bar mimic xlua.progress.
+    python train.py -T clf -D M MM --ex experiment_name --eval_freq 100 --tensor_freq 100 --
+    python test.py -T clf -D M MM --ex experiment_name --load_step 1950
+    pip install tensorboardx
+    tensorboard --logdir tensorboard --bind_all
 '''
 import os
 import sys
 import time
 import math
 import numpy as np
-
+import shutil
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -50,8 +54,16 @@ def init_params(net):
             if m.bias is not None:
                 init.constant_(m.bias, 0)
 
+def get_terminal_size():
+    try:
+        _, term_width = os.popen('stty size', 'r').read().split()
+        term_width = int(term_width)
+    except:
+        term_width, _ = shutil.get_terminal_size((80, 20)) 
+    return term_width
 
-_, term_width = os.popen('stty size', 'r').read().split()
+#_, term_width = os.popen('stty size', 'r').read().split()
+term_width = get_terminal_size()
 term_width = int(term_width)
 
 TOTAL_BAR_LENGTH = 65.
