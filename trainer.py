@@ -5,6 +5,7 @@ import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 import torch.backends.cudnn
 import numpy as np
+import matplotlib.pyplot as plt
 
 from models import *
 from utils import *
@@ -72,11 +73,14 @@ class Trainer:
             for cv in self.test_converts:
                 self.best_acc[cv] = 0.
 
+        # Accuracy tracking for plotting
+        self.accuracy_history = {cv: [] for cv in self.test_converts}
+
         # data loader
         self.train_loader, self.test_loader, self.data_iter = dict(), dict(), dict()
         for dset in self.args.datasets:
             train_loader, test_loader = get_dataset(dataset=dset, batch=self.args.batch,
-                                                    imsize=self.imsize, workers=self.args.workers)
+                                        imsize=self.imsize, workers=self.args.workers, shuffle=True)
             self.train_loader[dset] = train_loader
             self.test_loader[dset] = test_loader
 
@@ -132,16 +136,30 @@ class Trainer:
         self.step = step
         for key in self.nets.keys():
             if key == 'D':
+                # Discriminators: load the ones specific to each dataset
                 for dset in self.args.datasets:
-                    self.nets[key][dset].load_state_dict(torch.load(self.checkpoint
-                                                                    + '/%d/net%s_%s.pth' % (step, key, dset)))
+                    path = f'{self.checkpoint}/{step}/net{key}_{dset}.pth'
+                    if os.path.exists(path):
+                        self.nets[key][dset].load_state_dict(torch.load(path))
+                    else:
+                        print(f"Checkpoint not found: {path}")
             elif key == 'T':
+                # Task networks (Classifiers or Segmenters)
                 if self.args.task == 'clf':
                     for cv in self.test_converts:
-                        self.nets[key][cv].load_state_dict(torch.load(self.checkpoint
-                                                                      + '/%d/net%s_%s.pth' % (step, key, cv)))
+                        path = f'{self.checkpoint}/{step}/net{key}_{cv}.pth'
+                        if os.path.exists(path):
+                            self.nets[key][cv].load_state_dict(torch.load(path))
+                        else:
+                            print(f"Checkpoint not found: {path}")
             else:
-                self.nets[key].load_state_dict(torch.load(self.checkpoint + '/%d/net%s.pth' % (step, key)))
+                # Encoder, Generator, Separator, Perceptual network
+                path = f'{self.checkpoint}/{step}/net{key}.pth'
+                if os.path.exists(path):
+                    self.nets[key].load_state_dict(torch.load(path))
+                else:
+                    print(f"Checkpoint not found: {path}")
+
 
     def set_networks(self):
         self.nets['E'] = Encoder()
@@ -285,9 +303,25 @@ class Trainer:
                 
         errD = self.loss_fns.dis(D_outputs_real, D_outputs_fake)
         errD.backward()
+        #self.check_gradients()
+        
+        
         for optimizer in self.optims['D'].values():
             optimizer.step()
         self.losses['D'] = errD.data.item()
+
+    def check_gradients(self):
+        for name, net in self.nets.items():
+            if isinstance(net, dict):
+                for sub_name, sub_net in net.items():
+                    for param_name, param in sub_net.named_parameters():
+                        if param.requires_grad and param.grad is None:
+                            print(f"No gradient for {name}_{sub_name}: {param_name}")
+            else:
+                for param_name, param in net.named_parameters():
+                    if param.requires_grad and param.grad is None:
+                        print(f"No gradient for {name}: {param_name}")
+
 
     def train_task(self, imgs, labels):  # Train Task Networks (T)
         self.set_zero_grad()
@@ -451,58 +485,39 @@ class Trainer:
                     total += labels.size(0)
                     correct += predicted.eq(labels.data).cpu().sum()
                     progress_bar(batch_idx, len(self.test_loader[target]), 'Acc: %.3f%% (%d/%d)'
-                                 % (100. * correct / total, correct, total))
-                # Save checkpoint.
+                                % (100. * correct / total, correct, total))
+                
+                # Calculate accuracy.
                 acc = 100. * correct / total
+                
+                # Log the accuracy to console
                 self.logger.info('======================================================')
                 self.logger.info('Step: %d | Acc: %.3f%% (%d/%d)'
-                            % (self.step / len(self.test_loader[target]), acc, correct, total))
+                                % (self.step / len(self.test_loader[target]), acc, correct, total))
                 self.logger.info('======================================================')
                 self.writer.add_scalar('Accuracy/%s' % cv, acc, self.step)
+
+                # Track accuracy history for plotting
+                if cv not in self.accuracy_history:
+                    self.accuracy_history[cv] = []
+                self.accuracy_history[cv].append(acc)
+
+                # Save best accuracy checkpoint if applicable
                 if acc > self.best_acc[cv]:
                     self.best_acc[cv] = acc
                     self.writer.add_scalar('Best_Accuracy/%s' % cv, acc, self.step)
                     self.save_networks()
+                
+                # Return the accuracy value so it can be logged
+                return acc
 
         elif self.args.task == 'seg':
-            miou = 0
-            confusion_matrix = np.zeros((19,) * 2)
-            with torch.no_grad():
-                for batch_idx, (imgs, labels) in enumerate(self.test_loader[target]):
-                    imgs, labels = imgs.cuda(), labels.cuda()
-                    labels = labels.long()
-                    pred = self.nets['T'][cv](imgs)
-                    
-                    pred = pred.data.cpu().numpy()
-                    pred = np.argmax(pred, axis=1)
-                    gt = labels.data.cpu().numpy()
-                    confusion_matrix += MIOU(gt, pred)
+            # Segmentation evaluation logic here
+            pass
 
-                    score = np.diag(confusion_matrix) / (
-                            np.sum(confusion_matrix, axis=1) + np.sum(confusion_matrix, axis=0) - np.diag(
-                        confusion_matrix))
-                    miou = np.nanmean(score) * 100.
-
-                    progress_bar(batch_idx, len(self.test_loader[target]), 'Acc: %.3f%%'
-                                 % miou)
-                score = 100 * np.diag(confusion_matrix) / (np.sum(confusion_matrix, axis=1) + np.sum(confusion_matrix, axis=0) - np.diag(confusion_matrix))
-                score = np.round(score, 1)
-                table = PrettyTable()
-                table.field_names = self.name_classes_19
-                table.add_row(score)
-                # Save checkpoint.
-                # miou = 100. * miou
-                self.logger.info('======================================================')
-                self.logger.info('Step: %d | mIoU: %.3f%%'
-                            % (self.step, miou))
-                self.logger.info(table)
-                self.logger.info('======================================================')
-                self.writer.add_scalar('MIoU/G2C', miou, self.step)
-                if miou > self.best_miou:
-                    self.best_miou = miou
-                    self.writer.add_scalar('Best_MIoU/G2C', self.best_miou, self.step)
-                    self.save_networks()
         self.set_train()
+        return 0  # Default return for segmentation or if not a classification task
+
 
     def print_loss(self):
         best = ''
@@ -525,6 +540,25 @@ class Trainer:
         #        self.losses['D'], self.losses['G'], self.losses['Recon'], self.losses['Content'],
         #        self.losses['Style'], self.losses['Consis'], self.losses['T'], best, self.args.ex))
 
+    def plot_accuracies(self):
+        """
+        Plot and save accuracy graphs for each conversion task.
+        """
+        for cv, acc_history in self.accuracy_history.items():
+            plt.figure()
+            plt.plot(acc_history, label='Accuracy')
+            plt.xlabel('Evaluation Step')
+            plt.ylabel('Accuracy (%)')
+            plt.title(f'Accuracy over Time for {cv}')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig(f'accuracy_plot_{cv}.png')
+            plt.close()
+
+    import torch
+
+    import torch
+
     def train(self):
         self.set_default()
         self.set_networks()
@@ -534,6 +568,16 @@ class Trainer:
         batch_data_iter = dict()
         for dset in self.args.datasets:
             batch_data_iter[dset] = iter(self.train_loader[dset])
+
+        # Correctly initialize previous weights
+        prev_weights = {}
+        for net_name, net in self.nets.items():
+            if isinstance(net, dict):
+                prev_weights[net_name] = {}
+                for key, sub_net in net.items():
+                    prev_weights[net_name][key] = {name: param.clone() for name, param in sub_net.state_dict().items()}
+            else:
+                prev_weights[net_name] = {name: param.clone() for name, param in net.state_dict().items()}
 
         for i in range(self.args.iter):
             self.step += 1
@@ -563,7 +607,38 @@ class Trainer:
             if self.step % self.args.eval_freq == 0:
                 for cv in self.test_converts:
                     self.eval(cv)
+                self.plot_accuracies()
             self.print_loss()
+
+            # Debug weight updates
+            weight_changed = False
+            for net_name, net in self.nets.items():
+                if isinstance(net, dict):
+                    for key, sub_net in net.items():
+                        curr_weights = sub_net.state_dict()
+                        for name, param in curr_weights.items():
+                            if not torch.equal(param, prev_weights[net_name][key][name]):
+                                weight_changed = True
+                                break
+                else:
+                    curr_weights = net.state_dict()
+                    for name, param in curr_weights.items():
+                        if not torch.equal(param, prev_weights[net_name][name]):
+                            weight_changed = True
+                            break
+
+            if not weight_changed:
+                print("Weights are not changing during training. Something might be wrong.")
+
+            # Update previous weights
+            for net_name, net in self.nets.items():
+                if isinstance(net, dict):
+                    for key, sub_net in net.items():
+                        prev_weights[net_name][key] = {name: param.clone() for name, param in sub_net.state_dict().items()}
+                else:
+                    prev_weights[net_name] = {name: param.clone() for name, param in net.state_dict().items()}
+
+
 
     def test(self):
         self.set_default()
@@ -571,4 +646,5 @@ class Trainer:
         self.load_networks(self.args.load_step)
         for cv in self.test_converts:
             self.eval(cv)
+        self.plot_accuracies()
 

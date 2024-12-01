@@ -8,10 +8,10 @@ from augmentation import get_augmentation
 ## Import Data Loaders ##
 from dataloader import *
 
-python_file_name= 'blur'
+python_file_name= 'withoutda'
 
 
-def get_dataset(dataset, batch, imsize, workers):
+def get_dataset(dataset, batch, imsize, workers, shuffle=True):
     if dataset == 'G':
         train_dataset = GTA5(list_path='./data_list/GTA5', split='train', crop_size=imsize)
         test_dataset = None
@@ -21,7 +21,7 @@ def get_dataset(dataset, batch, imsize, workers):
         test_dataset = Cityscapes(list_path='./data_list/Cityscapes', split='val', crop_size=imsize, train=False)
 
     elif dataset == 'M':
-        train_transform = get_augmentation(python_file_name,imsize)
+        train_transform = get_augmentation(python_file_name, imsize)
         print(train_transform)
         test_transform = transforms.Compose([
                                     transforms.Resize(imsize),
@@ -42,8 +42,6 @@ def get_dataset(dataset, batch, imsize, workers):
         train_dataset = Subset(initial_train_dataset, train_indices)
         test_dataset = Subset(initial_test_dataset, test_indices)
 
-
-                                  
     elif dataset == 'U':
         train_dataset = dset.USPS(root='./data/usps', train=True, download=True,
                                    transform=transforms.Compose([
@@ -80,7 +78,7 @@ def get_dataset(dataset, batch, imsize, workers):
         test_dataset = Subset(initial_test_dataset, test_indices)
     
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch,
-                                                   shuffle=True, num_workers=int(workers), pin_memory=True)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch*4,
+                                                   shuffle=shuffle, num_workers=int(workers), pin_memory=True)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch * 4,
                                                    shuffle=False, num_workers=int(workers))
     return train_dataloader, test_dataloader
